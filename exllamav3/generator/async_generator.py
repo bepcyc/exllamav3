@@ -46,6 +46,8 @@ class AsyncGenerator:
                 # generator (issue #227).
                 results = self.generator.iterate()
                 self.deliver_results(results)
+                # Queues own delivered events; do not retain their completed jobs while idle.
+                del results
 
                 # Yield back to the event loop so result consumers and cancellation requests can run between
                 # generator iterations, even if the synchronous generator immediately has more work available.
