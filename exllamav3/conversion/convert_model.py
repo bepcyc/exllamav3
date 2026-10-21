@@ -81,6 +81,7 @@ parser.add_argument("-vb", "--vision_bits", type = int, default = None, help = "
 parser.add_argument("-hq", "--hq", type = int, nargs = "?", const = 1, default = 0, help = "Increase bitrate of select layers for supported models (MoE mostly): each promoted module's floor rises by its select_hq_bits above the base rate; -hq 2 doubles the promotion (-hq N: N times)")
 parser.add_argument("-ngb", "--ngram_bits", type = int, default = None, help = "Bits per weight for hashed n-gram embedding tables, 1-8, default: --bits rounded")
 parser.add_argument("-eb", "--embed_bits", type = int, default = None, help = "Bits per weight, token embedding table: 1-8, or 16 to store unquantized, default: 16")
+parser.add_argument("--token_embedding_device", type=str, default=None, help="Explicit GPU token lookup device (cuda:N), embed_bits16 only; must match first selected converter device")
 parser.add_argument("-ngf", "--ngram_file", type = str, default = None, help = "Pre-quantized n-gram table file (from util/convert_ngram.py) to use instead of quantizing the table")
 parser.add_argument("-r", "--resume", action = "store_true", help = "Resume interrupted job from working directory")
 parser.add_argument("-cd", "--cal_data", type = str, default = None, help = "Calibration data file (safetensors with packed token rows, e.g. from sc_trace.py) used instead of the bundled corpus mix")
@@ -274,6 +275,7 @@ def prepare(args) -> (dict, dict, bool, str):
         ("ngram_bits", False, 0),  # 0 = auto: --bits rounded
         ("ngram_file", False, ""),
         ("embed_bits", False, 16),
+        ("token_embedding_device", False, ""),
         ("cal_data", False, ""),
         ("cal_rows", False, 250),
         ("cal_cols", False, 2048),
@@ -304,6 +306,11 @@ def prepare(args) -> (dict, dict, bool, str):
         return None, None, False, f"--embed_bits must be an integer 1-8, or 16, got {in_args['embed_bits']}"
     if recipe_tensors is not None and not half_ok and any(v in HALF_RATES for v in recipe_tensors.values()):
         return None, None, False, f"Recipe uses half-integer bitrates, which need the mul1 codebook"
+
+    in_args["token_embedding_device"] = in_args["token_embedding_device"] or None
+    embedding_error = validate_token_embedding_device(in_args)
+    if embedding_error:
+        return None, None, False, embedding_error
 
     # Recipe strategy travels with the job; a stored map from a resumed job wins over the file
     if recipe_tensors is not None and "recipe_strategy" not in in_args:
@@ -364,8 +371,25 @@ def prepare(args) -> (dict, dict, bool, str):
     return in_args, job_state, True, None
 
 
+def validate_token_embedding_device(args):
+    value = args.get("token_embedding_device")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"cuda:[0-9]+", value):
+        return "token_embedding_device must be explicit cuda:N"
+    if args["embed_bits"] != 16:
+        return "GPU token lookup requires embed_bits16; quantized/streaming tables unqualified"
+    selected = str(args.get("devices") or "0").split(",")
+    if not selected or any(not item.isdigit() for item in selected):
+        return "Explicit selected converter devices required"
+    if int(value.split(":")[1]) != int(selected[0]):
+        return "Token embedding device must match first selected converter loader device"
+    return None
+
+
 def get_base_model(args):
     config = Config.from_directory(args["in_dir"])
+    config.infer_params.token_embedding_device = args.get("token_embedding_device")
     print(f" -- Loaded model config")
     print(f"    Architecture: {config.architecture}")
     model = Model.from_config(config)

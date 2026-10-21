@@ -97,8 +97,18 @@ class Embedding(Module):
 
         # A quantized table is decoded on the device, from ids that stay on the CPU
         quantized = allow_table and config is not None and config.stc.has_tensor(key + ".trellis")
+        ip = getattr(config, "infer_params", None)
+        requested = getattr(ip, "token_embedding_device", None)
+        self.token_embedding_device = None
+        if requested is not None:
+            requested = torch.device(requested)
+            if requested.type != "cuda" or requested.index is None:
+                raise ValueError("token_embedding_device requires an indexed cuda device")
+            if quantized or getattr(ip, "embed_stream_from_disk", False):
+                raise ValueError("token_embedding_device requires a resident unquantized embedding table")
+            self.token_embedding_device = requested
         self.caps.update({
-            "prefer_cpu": not quantized,
+            "prefer_cpu": not quantized and self.token_embedding_device is None,
             "x_cpu": quantized,
         })
 
@@ -108,11 +118,16 @@ class Embedding(Module):
 
     @override
     def load(self, device: torch.device, **kwargs):
+        device = torch.device(device)
+        if self.token_embedding_device is not None and device != self.token_embedding_device:
+            raise ValueError("native loader device does not match token_embedding_device")
         self.device = device
         stc = self.config.stc
         table = RowTable.find(stc, self.key, "trellis") if self.allow_table else None
         infer_params = getattr(self.config, "infer_params", None)
         stream_from_disk = self.allow_table and infer_params is not None and infer_params.embed_stream_from_disk
+        if self.token_embedding_device is not None and (table is not None or stream_from_disk):
+            raise ValueError("token_embedding_device requires a resident unquantized embedding table at load")
         if table is not None:
             signs = stc.get_tensor(self.key + ".signs", device, no_defer = True)
             table.open(stc, stream_from_disk)
@@ -124,6 +139,8 @@ class Embedding(Module):
             self.embedding = TableEmbedding(table, self.hidden_size, device, signs)
             return
         weight = stc.get_tensor(self.key + ".weight", self.device, float2half = True, allow_bf16 = True)
+        if self.token_embedding_device is not None and weight.device != self.token_embedding_device:
+            raise RuntimeError("native loader returned embedding weight on the wrong device")
         self._numel = weight.numel()
         # Built around the loaded weight: constructing on the meta device and swapping the weight in
         # runs the default initializer there, and the first meta-device op in a process imports
@@ -180,6 +197,12 @@ class Embedding(Module):
         params: dict,
         out_dtype: torch.dtype | None = None
     ) -> torch.Tensor:
+
+        if self.token_embedding_device is not None:
+            if not isinstance(self.embedding, nn.Embedding):
+                raise RuntimeError("resident GPU token embedding is not loaded")
+            if x.device != self.token_embedding_device or self.embedding.weight.device != self.token_embedding_device:
+                raise RuntimeError("token IDs and embedding weight must be on token_embedding_device")
 
         # Ensure input IDs in params
         if "input_ids" not in params:
@@ -278,6 +301,8 @@ class Embedding(Module):
         return []
 
     def tp_export(self, plan, producer):
+        if self.token_embedding_device is not None:
+            raise ValueError("token_embedding_device is qualified only for layer-split loading, not tensor parallel")
         assert self.device is not None, "Cannot export module for TP before loading."
         exported = {
             "cls": Embedding,
