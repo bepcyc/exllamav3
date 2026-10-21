@@ -74,7 +74,7 @@ def recompute_w_u_fwd_kernel(
         p_v = v + (bos*HV + i_h) * V + o_t[:, None] * (HV*V) + o_v[None, :]
         p_u = u + (bos*HV + i_h) * V + o_t[:, None] * (HV*V) + o_v[None, :]
         b_v = tl.load(p_v, mask=m_v, other=0.0)
-        b_vb = (b_v * b_b[:, None]).to(b_v.dtype)
+        b_vb = (b_v.to(tl.float32) * b_b[:, None].to(tl.float32)).to(b_v.dtype)
         b_u = tl.dot(b_A, b_vb, allow_tf32=False)
         tl.store(p_u, b_u.to(p_u.dtype.element_ty), mask=m_v)
 
@@ -88,7 +88,7 @@ def recompute_w_u_fwd_kernel(
         p_k = k + (bos*H + i_h // (HV // H)) * K + o_t[:, None] * (H*K) + o_k[None, :]
         p_w = w + (bos*HV + i_h) * K + o_t[:, None] * (HV*K) + o_k[None, :]
         b_k = tl.load(p_k, mask=m_k, other=0.0)
-        b_kb = b_k * b_b[:, None]
+        b_kb = (b_k.to(tl.float32) * b_b[:, None].to(tl.float32)).to(b_k.dtype)
         if USE_G:
             b_kb *= b_g[:, None]
         b_w = tl.dot(b_A, b_kb.to(b_k.dtype))
