@@ -18,8 +18,8 @@ class InferParams:
     # Avoid reconstruct path during GEMM. Forces use of low-bsz GEMM/GEMV kernels. Also disables MGEMM path
     no_reconstruct: bool = False
 
-    # Opt-in resident GPU token lookup. Set before constructing the model.
-    # The native loader must allocate this module on the same indexed device.
+    # Keep a resident, unquantized token embedding table on this GPU (e.g. "cuda:0") instead of in system RAM.
+    # Must be the device the embedding is loaded on, i.e. the first device of a layer-split load. Layer-split only
     token_embedding_device: str | None = None
 
     # Bitrate threshold for enabling MGEMM

@@ -71,6 +71,7 @@ def add_args(
     parser.add_argument("-ngl", "--ngram_lock", action = "store_true", help = "As --ngram_ram, and lock the table's pages in RAM (mlock) so they are never swapped out or reclaimed; needs RLIMIT_MEMLOCK (ulimit -l) to cover the table, or CAP_IPC_LOCK")
     parser.add_argument("-ngr", "--ngram_ram", action = "store_true", help = "Load an n-gram embedding table (PLE models, e.g. Qwen3.8-Flash-Next) fully into system RAM instead of streaming rows from disk per forward (tens of GB of RAM; avoids per-token disk reads)")
     parser.add_argument("-embd", "--embed_disk", action = "store_true", help = "Stream the token embedding table from disk per forward instead of holding it in system RAM")
+    parser.add_argument("-ted", "--token_embedding_device", type = str, help = "Keep the token embedding table resident on this GPU (e.g. cuda:0, the first device of the load) instead of in system RAM. Layer-split mode only; unquantized tables only", default = None)
     parser.add_argument("-tpb", "--tp_backend", type = str, help = "Tensor-parallel backend, either 'native' (default) or 'nccl'", default = "native")
     parser.add_argument("-tp_attn", "--tp_max_parallelism_attn", type = int, help = "(TP) Maximum parallelism for attention layers", default = None)
     parser.add_argument("-tp_mlp", "--tp_max_parallelism_mlp", type = int, help = "(TP) Maximum parallelism for MLP layers", default = None)
@@ -235,6 +236,9 @@ def init(
         config.infer_params.ngram_lock = True
     if getattr(args, "embed_disk", False):
         config.infer_params.embed_stream_from_disk = True
+    if getattr(args, "token_embedding_device", None):
+        assert not args.tensor_parallel, "--token_embedding_device currently requires layer-split mode"
+        config.infer_params.token_embedding_device = args.token_embedding_device
     if override_dynamic_seq_len: config.override_dynamic_seq_len(override_dynamic_seq_len)
     dmcl = getattr(args, "draft_moe_cpu_layers", 0)
     dmclt = getattr(args, "moe_cpu_threads", None)
